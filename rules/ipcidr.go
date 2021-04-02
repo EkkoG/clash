@@ -2,6 +2,7 @@ package rules
 
 import (
 	"net"
+	"strings"
 
 	C "github.com/Dreamacro/clash/constant"
 )
@@ -37,6 +38,10 @@ func (i *IPCIDR) RuleType() C.RuleType {
 func (i *IPCIDR) Match(metadata *C.Metadata) bool {
 	ip := metadata.DstIP
 	if i.isSourceIP {
+		ruleip := i.ipnet.IP.String()
+		if metadata.SrcIP.To4() == nil && strings.HasPrefix(ruleip, "::") {
+			return strings.HasSuffix(metadata.SrcIP.String(), ruleip)
+		}
 		ip = metadata.SrcIP
 	}
 	return ip != nil && i.ipnet.Contains(ip)
