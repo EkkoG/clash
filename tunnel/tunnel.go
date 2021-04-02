@@ -349,11 +349,11 @@ func match(metadata *C.Metadata) (C.Proxy, C.Rule, error) {
 			}
 
 			// IPv6 addresses
-			if unsupportNetworkstackFallback && metadata.Host == "" && metadata.DstIP.To4() == nil && !adapter.SupportIpv6() {
+			if unsupportNetworkstackFallback && metadata.Host == "" && metadata.DstIP.To4() == nil && !adapter.SupportIpv6() && adapter != proxies["DIRECT"] {
 				return proxies["DIRECT"], nil, nil
 			}
 			// IPv4 addresses
-			if unsupportNetworkstackFallback && metadata.Host == "" && metadata.DstIP.To4() != nil && !adapter.SupportIpv4() {
+			if unsupportNetworkstackFallback && metadata.Host == "" && metadata.DstIP.To4() != nil && !adapter.SupportIpv4() && adapter != proxies["DIRECT"] {
 				return proxies["DIRECT"], nil, nil
 			}
 			return adapter, rule, nil
