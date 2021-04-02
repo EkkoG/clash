@@ -28,10 +28,11 @@ import (
 type General struct {
 	Inbound
 	Controller
-	Mode      T.TunnelMode `json:"mode"`
-	LogLevel  log.LogLevel `json:"log-level"`
-	IPv6      bool         `json:"ipv6"`
-	Interface string       `json:"-"`
+	Mode                          T.TunnelMode `json:"mode"`
+	LogLevel                      log.LogLevel `json:"log-level"`
+	IPv6                          bool         `json:"ipv6"`
+	Interface                     string       `json:"-"`
+	UnsupportNetworkstackFallback bool         `json:"unsupport-networkstack-fallback"`
 }
 
 // Inbound
@@ -118,21 +119,22 @@ type RawFallbackFilter struct {
 }
 
 type RawConfig struct {
-	Port               int          `yaml:"port"`
-	SocksPort          int          `yaml:"socks-port"`
-	RedirPort          int          `yaml:"redir-port"`
-	TProxyPort         int          `yaml:"tproxy-port"`
-	MixedPort          int          `yaml:"mixed-port"`
-	Authentication     []string     `yaml:"authentication"`
-	AllowLan           bool         `yaml:"allow-lan"`
-	BindAddress        string       `yaml:"bind-address"`
-	Mode               T.TunnelMode `yaml:"mode"`
-	LogLevel           log.LogLevel `yaml:"log-level"`
-	IPv6               bool         `yaml:"ipv6"`
-	ExternalController string       `yaml:"external-controller"`
-	ExternalUI         string       `yaml:"external-ui"`
-	Secret             string       `yaml:"secret"`
-	Interface          string       `yaml:"interface-name"`
+	Port                          int          `yaml:"port"`
+	SocksPort                     int          `yaml:"socks-port"`
+	RedirPort                     int          `yaml:"redir-port"`
+	TProxyPort                    int          `yaml:"tproxy-port"`
+	MixedPort                     int          `yaml:"mixed-port"`
+	Authentication                []string     `yaml:"authentication"`
+	AllowLan                      bool         `yaml:"allow-lan"`
+	UnsupportNetworkstackFallback bool         `yaml:"unsupport-networkstack-fallback"`
+	BindAddress                   string       `yaml:"bind-address"`
+	Mode                          T.TunnelMode `yaml:"mode"`
+	LogLevel                      log.LogLevel `yaml:"log-level"`
+	IPv6                          bool         `yaml:"ipv6"`
+	ExternalController            string       `yaml:"external-controller"`
+	ExternalUI                    string       `yaml:"external-ui"`
+	Secret                        string       `yaml:"secret"`
+	Interface                     string       `yaml:"interface-name"`
 
 	ProxyProvider map[string]map[string]interface{} `yaml:"proxy-providers"`
 	Hosts         map[string]string                 `yaml:"hosts"`
@@ -157,15 +159,16 @@ func Parse(buf []byte) (*Config, error) {
 func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
 	// config with default value
 	rawCfg := &RawConfig{
-		AllowLan:       false,
-		BindAddress:    "*",
-		Mode:           T.Rule,
-		Authentication: []string{},
-		LogLevel:       log.INFO,
-		Hosts:          map[string]string{},
-		Rule:           []string{},
-		Proxy:          []map[string]interface{}{},
-		ProxyGroup:     []map[string]interface{}{},
+		AllowLan:                      false,
+		BindAddress:                   "*",
+		Mode:                          T.Rule,
+		UnsupportNetworkstackFallback: false,
+		Authentication:                []string{},
+		LogLevel:                      log.INFO,
+		Hosts:                         map[string]string{},
+		Rule:                          []string{},
+		Proxy:                         []map[string]interface{}{},
+		ProxyGroup:                    []map[string]interface{}{},
 		DNS: RawDNS{
 			Enable:      false,
 			UseHosts:    true,
@@ -260,10 +263,11 @@ func parseGeneral(cfg *RawConfig) (*General, error) {
 			ExternalUI:         cfg.ExternalUI,
 			Secret:             cfg.Secret,
 		},
-		Mode:      cfg.Mode,
-		LogLevel:  cfg.LogLevel,
-		IPv6:      cfg.IPv6,
-		Interface: cfg.Interface,
+		Mode:                          cfg.Mode,
+		LogLevel:                      cfg.LogLevel,
+		IPv6:                          cfg.IPv6,
+		UnsupportNetworkstackFallback: cfg.UnsupportNetworkstackFallback,
+		Interface:                     cfg.Interface,
 	}, nil
 }
 
@@ -282,6 +286,15 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
 	// parse proxy
 	for idx, mapping := range proxiesConfig {
 		proxy, err := adapter.ParseProxy(mapping)
+		if _, ok := mapping["ipv4"]; ok {
+			mapping["ipv4"] = true
+			//do something here
+		}
+		if _, ok := mapping["ipv6"]; ok {
+			mapping["ipv6"] = false
+			//do something here
+		}
+		fmt.Println('m', mapping)
 		if err != nil {
 			return nil, nil, fmt.Errorf("proxy %d: %w", idx, err)
 		}
