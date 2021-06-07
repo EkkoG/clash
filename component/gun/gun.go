@@ -4,6 +4,8 @@
 package gun
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
@@ -15,14 +17,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Dreamacro/clash/common/pool"
-
 	"go.uber.org/atomic"
 	"golang.org/x/net/http2"
 )
 
 var (
 	ErrInvalidLength = errors.New("invalid length")
+	ErrSmallBuffer   = errors.New("buffer too small")
 )
 
 var (
@@ -30,21 +31,24 @@ var (
 		"content-type": []string{"application/grpc"},
 		"user-agent":   []string{"grpc-go/1.36.0"},
 	}
+	bufferPool = sync.Pool{New: func() interface{} { return &bytes.Buffer{} }}
 )
 
 type DialFn = func(network, addr string) (net.Conn, error)
 
 type Conn struct {
-	response *http.Response
-	request  *http.Request
-	client   *http.Client
-	writer   *io.PipeWriter
-	once     sync.Once
-	close    *atomic.Bool
-	err      error
+	response  *http.Response
+	request   *http.Request
+	transport *http2.Transport
+	writer    *io.PipeWriter
+	once      sync.Once
+	close     *atomic.Bool
+	err       error
+	remain    int
+	br        *bufio.Reader
 
-	buf    []byte
-	offset int
+	// deadlines
+	deadline *time.Timer
 }
 
 type Config struct {
@@ -53,7 +57,7 @@ type Config struct {
 }
 
 func (g *Conn) initRequest() {
-	response, err := g.client.Do(g.request)
+	response, err := g.transport.RoundTrip(g.request)
 	if err != nil {
 		g.err = err
 		g.writer.Close()
@@ -62,6 +66,7 @@ func (g *Conn) initRequest() {
 
 	if !g.close.Load() {
 		g.response = response
+		g.br = bufio.NewReader(response.Body)
 	} else {
 		response.Body.Close()
 	}
@@ -73,63 +78,63 @@ func (g *Conn) Read(b []byte) (n int, err error) {
 		return 0, g.err
 	}
 
-	if g.buf != nil {
-		n = copy(b, g.buf[g.offset:])
-		g.offset += n
-		if g.offset == len(g.buf) {
-			g.offset = 0
-			g.buf = nil
+	if g.remain > 0 {
+		size := g.remain
+		if len(b) < size {
+			size = len(b)
 		}
+
+		n, err = io.ReadFull(g.br, b[:size])
+		g.remain -= n
 		return
 	} else if g.response == nil {
 		return 0, net.ErrClosed
 	}
 
-	buf := make([]byte, 5)
-	_, err = io.ReadFull(g.response.Body, buf)
+	// 0x00 grpclength(uint32) 0x0A uleb128 payload
+	_, err = g.br.Discard(6)
 	if err != nil {
 		return 0, err
 	}
-	grpcPayloadLen := binary.BigEndian.Uint32(buf[1:])
-	if grpcPayloadLen > pool.RelayBufferSize {
-		return 0, ErrInvalidLength
-	}
 
-	buf = pool.Get(int(grpcPayloadLen))
-	_, err = io.ReadFull(g.response.Body, buf)
+	protobufPayloadLen, err := binary.ReadUvarint(g.br)
 	if err != nil {
-		pool.Put(buf)
-		return 0, io.ErrUnexpectedEOF
-	}
-	protobufPayloadLen, protobufLengthLen := decodeUleb128(buf[1:])
-	if protobufLengthLen == 0 {
-		pool.Put(buf)
-		return 0, ErrInvalidLength
-	}
-	if grpcPayloadLen != uint32(protobufPayloadLen)+uint32(protobufLengthLen)+1 {
-		pool.Put(buf)
 		return 0, ErrInvalidLength
 	}
 
-	if len(b) >= int(grpcPayloadLen)-1-int(protobufLengthLen) {
-		n = copy(b, buf[1+protobufLengthLen:])
-		pool.Put(buf)
+	size := int(protobufPayloadLen)
+	if len(b) < size {
+		size = len(b)
+	}
+
+	n, err = io.ReadFull(g.br, b[:size])
+	if err != nil {
 		return
 	}
-	n = copy(b, buf[1+protobufLengthLen:])
-	g.offset = n + 1 + int(protobufLengthLen)
-	g.buf = buf
-	return
+
+	remain := int(protobufPayloadLen) - n
+	if remain > 0 {
+		g.remain = remain
+	}
+
+	return n, nil
 }
 
 func (g *Conn) Write(b []byte) (n int, err error) {
-	protobufHeader := appendUleb128([]byte{0x0A}, uint64(len(b)))
+	protobufHeader := [binary.MaxVarintLen64 + 1]byte{0x0A}
+	varuintSize := binary.PutUvarint(protobufHeader[1:], uint64(len(b)))
 	grpcHeader := make([]byte, 5)
-	grpcPayloadLen := uint32(len(protobufHeader) + len(b))
+	grpcPayloadLen := uint32(varuintSize + 1 + len(b))
 	binary.BigEndian.PutUint32(grpcHeader[1:5], grpcPayloadLen)
 
-	buffers := net.Buffers{grpcHeader, protobufHeader, b}
-	_, err = buffers.WriteTo(g.writer)
+	buf := bufferPool.Get().(*bytes.Buffer)
+	defer bufferPool.Put(buf)
+	defer buf.Reset()
+	buf.Write(grpcHeader)
+	buf.Write(protobufHeader[:varuintSize+1])
+	buf.Write(b)
+
+	_, err = g.writer.Write(buf.Bytes())
 	if err == io.ErrClosedPipe && g.err != nil {
 		err = g.err
 	}
@@ -148,9 +153,20 @@ func (g *Conn) Close() error {
 
 func (g *Conn) LocalAddr() net.Addr                { return &net.TCPAddr{IP: net.IPv4zero, Port: 0} }
 func (g *Conn) RemoteAddr() net.Addr               { return &net.TCPAddr{IP: net.IPv4zero, Port: 0} }
-func (g *Conn) SetDeadline(t time.Time) error      { return nil }
-func (g *Conn) SetReadDeadline(t time.Time) error  { return nil }
-func (g *Conn) SetWriteDeadline(t time.Time) error { return nil }
+func (g *Conn) SetReadDeadline(t time.Time) error  { return g.SetDeadline(t) }
+func (g *Conn) SetWriteDeadline(t time.Time) error { return g.SetDeadline(t) }
+
+func (g *Conn) SetDeadline(t time.Time) error {
+	d := time.Until(t)
+	if g.deadline != nil {
+		g.deadline.Reset(d)
+		return nil
+	}
+	g.deadline = time.AfterFunc(d, func() {
+		g.Close()
+	})
+	return nil
+}
 
 func NewHTTP2Client(dialFn DialFn, tlsConfig *tls.Config) *http2.Transport {
 	dialFunc := func(network, addr string, cfg *tls.Config) (net.Conn, error) {
@@ -167,7 +183,7 @@ func NewHTTP2Client(dialFn DialFn, tlsConfig *tls.Config) *http2.Transport {
 		state := cn.ConnectionState()
 		if p := state.NegotiatedProtocol; p != http2.NextProtoTLS {
 			cn.Close()
-			return nil, errors.New("http2: unexpected ALPN protocol " + p + "; want q" + http2.NextProtoTLS)
+			return nil, fmt.Errorf("http2: unexpected ALPN protocol %s, want %s", p, http2.NextProtoTLS)
 		}
 		return cn, nil
 	}
@@ -177,7 +193,6 @@ func NewHTTP2Client(dialFn DialFn, tlsConfig *tls.Config) *http2.Transport {
 		TLSClientConfig:    tlsConfig,
 		AllowHTTP:          false,
 		DisableCompression: true,
-		ReadIdleTimeout:    0,
 		PingTimeout:        0,
 	}
 }
@@ -186,10 +201,6 @@ func StreamGunWithTransport(transport *http2.Transport, cfg *Config) (net.Conn, 
 	serviceName := "GunService"
 	if cfg.ServiceName != "" {
 		serviceName = cfg.ServiceName
-	}
-
-	client := &http.Client{
-		Transport: transport,
 	}
 
 	reader, writer := io.Pipe()
@@ -208,10 +219,10 @@ func StreamGunWithTransport(transport *http2.Transport, cfg *Config) (net.Conn, 
 	}
 
 	conn := &Conn{
-		request: request,
-		client:  client,
-		writer:  writer,
-		close:   atomic.NewBool(false),
+		request:   request,
+		transport: transport,
+		writer:    writer,
+		close:     atomic.NewBool(false),
 	}
 
 	go conn.once.Do(conn.initRequest)
