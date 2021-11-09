@@ -27,8 +27,7 @@ var (
 	configMux sync.RWMutex
 
 	// Outbound Rule
-	mode                          = Rule
-	unsupportNetworkstackFallback = false
+	mode = Rule
 
 	// default timeout for UDP session
 	udpTimeout = 60 * time.Second
@@ -86,14 +85,6 @@ func Mode() TunnelMode {
 // SetMode change the mode of tunnel
 func SetMode(m TunnelMode) {
 	mode = m
-}
-
-func SetUnsupportNetworkstackFallback(f bool) {
-	unsupportNetworkstackFallback = f
-}
-
-func UnsupportNetworkstackFallback() bool {
-	return unsupportNetworkstackFallback
 }
 
 // processUDP starts a loop to handle udp packet
@@ -338,15 +329,6 @@ func match(metadata *C.Metadata) (C.Proxy, C.Rule, error) {
 			if metadata.NetWork == C.UDP && !adapter.SupportUDP() {
 				log.Debugln("%s UDP is not supported", adapter.Name())
 				continue
-			}
-
-			// IPv6 addresses
-			if unsupportNetworkstackFallback && metadata.Host == "" && metadata.DstIP.To4() == nil && !adapter.SupportIpv6() && adapter != proxies["DIRECT"] {
-				return proxies["DIRECT"], nil, nil
-			}
-			// IPv4 addresses
-			if unsupportNetworkstackFallback && metadata.Host == "" && metadata.DstIP.To4() != nil && !adapter.SupportIpv4() && adapter != proxies["DIRECT"] {
-				return proxies["DIRECT"], nil, nil
 			}
 			return adapter, rule, nil
 		}

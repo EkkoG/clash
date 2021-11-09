@@ -13,8 +13,6 @@ type Base struct {
 	addr string
 	tp   C.AdapterType
 	udp  bool
-	ipv4 bool
-	ipv6 bool
 }
 
 // Name implements C.ProxyAdapter
@@ -42,14 +40,6 @@ func (b *Base) SupportUDP() bool {
 	return b.udp
 }
 
-func (b *Base) SupportIpv4() bool {
-	return b.ipv4
-}
-
-func (b *Base) SupportIpv6() bool {
-	return b.ipv6
-}
-
 // MarshalJSON implements C.ProxyAdapter
 func (b *Base) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]string{
@@ -67,8 +57,8 @@ func (b *Base) Unwrap(metadata *C.Metadata) C.Proxy {
 	return nil
 }
 
-func NewBase(name string, addr string, tp C.AdapterType, udp bool, ipv4 bool, ipv6 bool) *Base {
-	return &Base{name, addr, tp, udp, ipv4, ipv6}
+func NewBase(name string, addr string, tp C.AdapterType, udp bool) *Base {
+	return &Base{name, addr, tp, udp}
 }
 
 type conn struct {
